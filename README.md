@@ -1,4 +1,4 @@
-# 🖥️ TechCheck4PyrusWebForm
+# 🖥️ TechCheck4PyrusWebForm 
 
 **TechCheck4PyrusWebForm** — это универсальное (White-label) Windows-приложение с открытым исходным кодом для проведения автоматизированного технического аудита ПК кандидатов на удаленную работу. 
 
