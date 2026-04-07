@@ -896,6 +896,9 @@ class TechCheckApp:
         # 5. Изолированный старт PyQt5
         p = multiprocessing.Process(target=run_browser, args=(form_url, data_to_pass, labels))
         p.start()
+        
+        # 6. Автоматически закрываем окно вердикта после успешного запуска браузера
+        self.close_window(self.verdict_win)
 
 if __name__ == "__main__":
     # Обязательная команда для корректной работы multiprocessing в скомпилированном exe (Windows)
