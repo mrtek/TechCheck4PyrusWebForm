@@ -1,0 +1,18 @@
+# Локальный портативный Python
+python_38_full/
+
+# Папки и файлы сборки PyInstaller
+build/
+dist/
+*.spec
+
+# Кэш Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Твой локальный конфиг (с зашифрованным паролем и настоящими ссылками)
+config.json
+
+# Временный файл блокировки антиспама
+techcheck_lock.dat

@@ -1,0 +1,6 @@
+psutil
+WMI
+Pillow
+PyQt5
+PyQtWebEngine
+pyinstaller

@@ -1,0 +1,46 @@
+{
+    "_comment_ОБЩЕЕ": "Конфигурационный файл программы TechCheck4PyrusWebForm.",
+    "app_settings": {
+        "window_title": "Техническая проверка личного оборудования для удаленной работы",
+        "company_target_text": "удаленной работы",
+        "color_success": "#27ae60",
+        "color_error": "#FC5055"
+    },
+    "hardware_limits": {
+        "cpu_rec_label": "Рекомендованный минимальный CPU",
+        "cpu_rec_name": "Intel Core i5-6400",
+        "cpu_rec_score": 3235,
+        "cpu_min_label": "Минимально допустимый CPU",
+        "cpu_min_name": "Celeron N4020",
+        "cpu_min_score": 957,
+        "ram_rec_gb": 8,
+        "ram_min_gb": 4,
+        "os_required": "Windows 10 или 11"
+    },
+    "network_limits": {
+        "ping_max_ms": 50.0,
+        "dl_min_mbps": 20.0,
+        "ul_min_mbps": 20.0
+    },
+    "web_form": {
+        "form_url": "https://example.com/your-form",
+        "labels": {
+            "cpu": "Центральный процессор",
+            "ram": "Оперативная память",
+            "os": "Операционная система",
+            "ping": "Пинг",
+            "dl": "Входящая скорость интернета",
+            "ul": "Исходящая скорость интернета",
+            "verdict": "Результат анализа",
+            "improvements": "Что необходимо улучшить",
+            "hwid": "HWID",
+            "fio": "ФИО"
+        }
+    },
+    "spam_protection": {
+        "enable_local_lock": true,
+        "lock_timeout_hours": 24.0,
+        "enable_hwid": true,
+        "admin_password_hash": ""
+    }
+}
