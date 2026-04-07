@@ -102,6 +102,12 @@ def run_browser(form_url, sys_data, labels):
     profile = QWebEngineProfile.defaultProfile()
     profile.setHttpUserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
     
+    # --- МОСТ МЕЖДУ JS И PYTHON ДЛЯ АВТОЗАКРЫТИЯ ---
+    def on_title_changed(title):
+        if title == "CLOSE_ME_SUCCESS":
+            win.close()
+    browser.titleChanged.connect(on_title_changed)
+    
     def on_load_finished(ok):
         if ok:
             # JavaScript инъекция
@@ -163,17 +169,37 @@ def run_browser(form_url, sys_data, labels):
                             }}
                         }}
 
-                        // ЛОВУШКА HONEYPOT: Ищем кнопку отправки Pyrus и вешаем на нее перехватчик
-                        let honeypotInterval = setInterval(() => {{
+                        // ЛОВУШКА HONEYPOT И АВТОЗАКРЫТИЕ
+                        // Интервал работает постоянно, так как React может перерисовать кнопку при ошибке валидации
+                        setInterval(() => {{
                             let saveBtn = document.querySelector('.pyrusExternalWebForm__saveButton');
                             if (saveBtn && !saveBtn.dataset.honeypotAttached) {{
                                 // Перехват при наведении мышки И при нажатии
                                 saveBtn.addEventListener('mouseenter', forceInjectCorrectData, true);
                                 saveBtn.addEventListener('mousedown', forceInjectCorrectData, true);
+                                
+                                // Слушаем реальный клик для автозакрытия окна
+                                saveBtn.addEventListener('click', () => {{
+                                    setTimeout(() => {{
+                                        let successCheck = setInterval(() => {{
+                                            if (window.isClosing) return;
+                                            let currentBtn = document.querySelector('.pyrusExternalWebForm__saveButton');
+                                            
+                                            // Если кнопка пропала из DOM (или скрыта) — значит форма успешно ушла на сервер
+                                            if (!currentBtn || currentBtn.offsetParent === null) {{
+                                                clearInterval(successCheck);
+                                                window.isClosing = true;
+                                                
+                                                // Даем кандидату 2 секунды прочитать сообщение об успехе и меняем заголовок для Python
+                                                setTimeout(() => {{ document.title = "CLOSE_ME_SUCCESS"; }}, 2000);
+                                            }}
+                                        }}, 1000);
+                                    }}, 1000);
+                                }});
+                                
                                 saveBtn.dataset.honeypotAttached = "true";
-                                clearInterval(honeypotInterval); // Кнопка найдена и заряжена
                             }}
-                        }}, 500);
+                        }}, 1000);
 
                         return;
                     }}
