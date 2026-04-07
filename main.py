@@ -87,7 +87,10 @@ def run_browser(form_url, sys_data, labels):
     """
     from PyQt5.QtWidgets import QApplication, QMainWindow
     from PyQt5.QtWebEngineWidgets import QWebEngineView, QWebEngineProfile
-    from PyQt5.QtCore import QUrl
+    from PyQt5.QtCore import QUrl, QCoreApplication, Qt
+
+    # Решение проблем с отрисовкой на некоторых видеокартах
+    QCoreApplication.setAttribute(Qt.AA_UseSoftwareOpenGL)
 
     app = QApplication(sys.argv)
     win = QMainWindow()
@@ -106,6 +109,12 @@ def run_browser(form_url, sys_data, labels):
             setTimeout(function() {{
                 let wrappers = document.querySelectorAll('div[data-test-id="formFieldBaseWrapper"]');
                 
+                // 1. Блокируем ВСЕ текстовые поля на форме сразу, чтобы пользователь не менял результаты
+                document.querySelectorAll('input, textarea').forEach(el => {{
+                    el.readOnly = true;
+                    el.style.backgroundColor = "#f0f0f0"; // Визуально помечаем как заблокированные (серые)
+                }});
+
                 let tasks = [
                     {{ label: "{labels.get('cpu', 'Центральный процессор')}", text: "{sys_data['cpu_raw']}" }},
                     {{ label: "{labels.get('ram', 'Оперативная память')}", text: "{sys_data['ram']}" }},
@@ -121,13 +130,27 @@ def run_browser(form_url, sys_data, labels):
                 let i = 0;
                 function processNext() {{
                     if (i >= tasks.length) {{
-                        // Финальный этап: установка фокуса на поле ФИО
+                        // Финальный этап: находим ФИО и E-mail, чтобы их разблокировать для ввода
+                        let fioLabel = "{labels.get('fio', 'ФИО')}".toLowerCase();
+                        
                         for (let w = 0; w < wrappers.length; w++) {{
                             let titleWrap = wrappers[w].querySelector('div[class*="titleWrapper"]');
-                            if (titleWrap && titleWrap.innerText.includes("{labels.get('fio', 'ФИО')}")) {{
-                                let el = wrappers[w].querySelector('input');
-                                if (el) el.focus();
-                                break;
+                            if (titleWrap) {{
+                                let titleText = titleWrap.innerText.toLowerCase();
+                                
+                                // Разблокируем поля: ФИО (из конфига), 'e-mail', 'email' или 'почта'
+                                if (titleText.includes(fioLabel) || titleText.includes('e-mail') || titleText.includes('email') || titleText.includes('почта')) {{
+                                    let el = wrappers[w].querySelector('input');
+                                    if (el) {{
+                                        el.readOnly = false; // Разрешаем ручной ввод
+                                        el.style.backgroundColor = "white"; // Возвращаем белый фон
+                                        
+                                        // Автоматически ставим курсор (фокус) в поле ФИО для удобства
+                                        if (titleText.includes(fioLabel)) {{
+                                            el.focus();
+                                        }}
+                                    }}
+                                }}
                             }}
                         }}
                         return;
@@ -141,25 +164,27 @@ def run_browser(form_url, sys_data, labels):
                             if (titleWrap && titleWrap.innerText.includes(task.label)) {{
                                 let el = wrappers[w].querySelector('input:not([type="hidden"]), textarea, div[contenteditable="true"]');
                                 if (el) {{
-                                    el.focus();
-                                    let range = document.createRange();
-                                    range.selectNodeContents(el);
-                                    let sel = window.getSelection();
-                                    sel.removeAllRanges();
-                                    sel.addRange(range);
-                                    document.execCommand('insertText', false, task.text);
+                                    // Прямая вставка данных в обход системного ввода клавиатуры (Защита от Punto Switcher и обход readOnly)
+                                    if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') {{
+                                        el.value = task.text;
+                                    }} else {{
+                                        el.innerText = task.text;
+                                    }}
+                                    // Уведомление фреймворков страницы об изменении данных
                                     el.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                                    el.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                                    el.dispatchEvent(new Event('blur', {{ bubbles: true }}));
                                 }}
                                 break;
                             }}
                         }}
                     }}
                     i++;
-                    setTimeout(processNext, 150); 
+                    setTimeout(processNext, 200); 
                 }}
                 
                 processNext();
-            }}, 1500); 
+            }}, 3000); 
             """
             browser.page().runJavaScript(js)
 
@@ -550,7 +575,7 @@ class TechCheckApp:
     # 2 ЭТАП: ПРОВЕРКА ИНТЕРНЕТА (ФОНОВЫЙ ПОТОК)
     # ==============================================================
     def start_net_test_thread(self):
-        """Запуск проверки сети в отдельном потоке (Thread), чтобы UI не зависал"""
+        """Запуск проверки сети в отдельном поте (Thread), чтобы UI не зависал"""
         self.btn_net.config(state="disabled", text="Тестирование через QMS...")
         if self.lbl_ping: self.lbl_ping.config(text="Тестирование...", fg="orange")
         if self.lbl_dl: self.lbl_dl.config(text="Тестирование...", fg="orange")
