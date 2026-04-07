@@ -104,17 +104,9 @@ def run_browser(form_url, sys_data, labels):
     
     def on_load_finished(ok):
         if ok:
-            # JavaScript инъекция для поиска полей и вставки текста
+            # JavaScript инъекция
             js = f"""
             setTimeout(function() {{
-                let wrappers = document.querySelectorAll('div[data-test-id="formFieldBaseWrapper"]');
-                
-                // 1. Блокируем ВСЕ текстовые поля на форме сразу, чтобы пользователь не менял результаты
-                document.querySelectorAll('input, textarea').forEach(el => {{
-                    el.readOnly = true;
-                    el.style.backgroundColor = "#f0f0f0"; // Визуально помечаем как заблокированные (серые)
-                }});
-
                 let tasks = [
                     {{ label: "{labels.get('cpu', 'Центральный процессор')}", text: "{sys_data['cpu_raw']}" }},
                     {{ label: "{labels.get('ram', 'Оперативная память')}", text: "{sys_data['ram']}" }},
@@ -127,50 +119,79 @@ def run_browser(form_url, sys_data, labels):
                     {{ label: "{labels.get('hwid', 'HWID')}", text: "{sys_data['hwid']}" }}
                 ];
 
-                let i = 0;
-                function processNext() {{
-                    if (i >= tasks.length) {{
-                        // Финальный этап: находим ФИО и E-mail, чтобы их разблокировать для ввода
-                        let fioLabel = "{labels.get('fio', 'ФИО')}".toLowerCase();
-                        
-                        for (let w = 0; w < wrappers.length; w++) {{
-                            let titleWrap = wrappers[w].querySelector('div[class*="titleWrapper"]');
-                            if (titleWrap) {{
-                                let titleText = titleWrap.innerText.toLowerCase();
-                                
-                                // Разблокируем поля: ФИО (из конфига), 'e-mail', 'email' или 'почта'
-                                if (titleText.includes(fioLabel) || titleText.includes('e-mail') || titleText.includes('email') || titleText.includes('почта')) {{
-                                    let el = wrappers[w].querySelector('input');
+                // Функция для принудительной вставки правильных данных во все поля
+                function forceInjectCorrectData() {{
+                    let currentWrappers = document.querySelectorAll('div[data-test-id="formFieldBaseWrapper"]');
+                    tasks.forEach(task => {{
+                        if (task.text !== "-" && task.text !== "") {{
+                            for (let w = 0; w < currentWrappers.length; w++) {{
+                                let titleWrap = currentWrappers[w].querySelector('div[class*="titleWrapper"]');
+                                if (titleWrap && titleWrap.innerText.includes(task.label)) {{
+                                    let el = currentWrappers[w].querySelector('input:not([type="hidden"]), textarea, div[contenteditable="true"]');
                                     if (el) {{
-                                        el.readOnly = false; // Разрешаем ручной ввод
-                                        el.style.backgroundColor = "white"; // Возвращаем белый фон
-                                        
-                                        // Автоматически ставим курсор (фокус) в поле ФИО для удобства
-                                        if (titleText.includes(fioLabel)) {{
-                                            el.focus();
+                                        // Принудительно возвращаем истинные значения
+                                        if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') {{
+                                            el.value = task.text;
+                                        }} else {{
+                                            el.innerText = task.text;
                                         }}
+                                        // Уведомляем React/Vue о подмене
+                                        el.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                                        el.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                                        el.dispatchEvent(new Event('blur', {{ bubbles: true }}));
                                     }}
+                                    break;
                                 }}
                             }}
                         }}
+                    }});
+                }}
+
+                // Первичное заполнение при открытии формы
+                let i = 0;
+                function processNext() {{
+                    if (i >= tasks.length) {{
+                        // Ставим курсор в поле ФИО для удобства
+                        let wrappers = document.querySelectorAll('div[data-test-id="formFieldBaseWrapper"]');
+                        let fioLabel = "{labels.get('fio', 'ФИО')}".toLowerCase();
+                        for (let w = 0; w < wrappers.length; w++) {{
+                            let titleWrap = wrappers[w].querySelector('div[class*="titleWrapper"]');
+                            if (titleWrap && titleWrap.innerText.toLowerCase().includes(fioLabel)) {{
+                                let el = wrappers[w].querySelector('input');
+                                if (el) el.focus();
+                                break;
+                            }}
+                        }}
+
+                        // ЛОВУШКА HONEYPOT: Ищем кнопку отправки Pyrus и вешаем на нее перехватчик
+                        let honeypotInterval = setInterval(() => {{
+                            let saveBtn = document.querySelector('.pyrusExternalWebForm__saveButton');
+                            if (saveBtn && !saveBtn.dataset.honeypotAttached) {{
+                                // Перехват при наведении мышки И при нажатии
+                                saveBtn.addEventListener('mouseenter', forceInjectCorrectData, true);
+                                saveBtn.addEventListener('mousedown', forceInjectCorrectData, true);
+                                saveBtn.dataset.honeypotAttached = "true";
+                                clearInterval(honeypotInterval); // Кнопка найдена и заряжена
+                            }}
+                        }}, 500);
+
                         return;
                     }}
 
-                    // Обработка текущего поля
+                    // Итеративное заполнение полей
                     let task = tasks[i];
                     if (task.text !== "-" && task.text !== "") {{
+                        let wrappers = document.querySelectorAll('div[data-test-id="formFieldBaseWrapper"]');
                         for (let w = 0; w < wrappers.length; w++) {{
                             let titleWrap = wrappers[w].querySelector('div[class*="titleWrapper"]');
                             if (titleWrap && titleWrap.innerText.includes(task.label)) {{
                                 let el = wrappers[w].querySelector('input:not([type="hidden"]), textarea, div[contenteditable="true"]');
                                 if (el) {{
-                                    // Прямая вставка данных в обход системного ввода клавиатуры (Защита от Punto Switcher и обход readOnly)
                                     if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') {{
                                         el.value = task.text;
                                     }} else {{
                                         el.innerText = task.text;
                                     }}
-                                    // Уведомление фреймворков страницы об изменении данных
                                     el.dispatchEvent(new Event('input', {{ bubbles: true }}));
                                     el.dispatchEvent(new Event('change', {{ bubbles: true }}));
                                     el.dispatchEvent(new Event('blur', {{ bubbles: true }}));
