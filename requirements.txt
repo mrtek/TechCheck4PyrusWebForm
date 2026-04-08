@@ -1,6 +1,5 @@
 psutil
 WMI
 Pillow
-PyQt5
-PyQtWebEngine
+pywebview
 pyinstaller
