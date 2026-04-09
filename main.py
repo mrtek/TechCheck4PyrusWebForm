@@ -20,6 +20,7 @@ import hashlib
 import io
 import base64
 import webview  
+import winreg
 from datetime import datetime
 
 # ПРЕДОХРАНИТЕЛЬ ДЛЯ СКРЫТОЙ КОНСОЛИ (чтобы --windowed режим не падал с ошибкой NoneType)
@@ -75,6 +76,22 @@ def load_config():
             "spam_protection": { "enable_local_lock": True, "lock_timeout_hours": 24.0, "enable_hwid": True, "admin_password_hash": "" }
         }
 
+def is_webview2_installed():
+    """Проверяет наличие Microsoft Edge WebView2 Runtime в реестре Windows"""
+    if platform.system() != "Windows": return True
+    paths = [
+        r"SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}",
+        r"SOFTWARE\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}"
+    ]
+    for path in paths:
+        for root in (winreg.HKEY_LOCAL_MACHINE, winreg.HKEY_CURRENT_USER):
+            try:
+                with winreg.OpenKey(root, path):
+                    return True
+            except FileNotFoundError:
+                pass
+    return False
+
 # ==============================================================
 # ИЗОЛИРОВАННЫЙ ПРОЦЕСС ДЛЯ БРАУЗЕРА (pywebview)
 # ==============================================================
@@ -92,7 +109,6 @@ def run_browser(form_url, sys_data, labels, b64_img):
 
     js_code = f"""
     setTimeout(function() {{
-        // Уменьшаем масштаб страницы до 80%, чтобы все элементы влезли в экран без прокрутки
         document.body.style.zoom = "0.8";
 
         let tasks = [
@@ -228,14 +244,16 @@ def run_browser(form_url, sys_data, labels, b64_img):
     }}, 3000);
     """
 
-    # maximized=True заставит окно открываться сразу на весь экран
     window = webview.create_window("Отправка отчета", form_url, js_api=api, width=1024, height=768, maximized=True)
     api.set_window(window)
     
     def on_loaded(w):
         w.evaluate_js(js_code)
         
-    webview.start(on_loaded, window)
+    try:
+        webview.start(on_loaded, window, gui='edgechromium')
+    except Exception:
+        webview.start(on_loaded, window)
 
 # ==============================================================
 # ГЛАВНЫЙ КЛАСС ПРИЛОЖЕНИЯ
@@ -355,17 +373,13 @@ class TechCheckApp:
         
         self.check_vpn_loop()
 
-    # --- БЛОК ПРОКРУТКИ МЫШЬЮ ---
     def _on_mousewheel(self, event):
-        """Перехватывает колесико мыши и крутит главный ползунок Text-виджета"""
         self.result_box.yview_scroll(int(-1 * (event.delta / 120)), "units")
 
     def bind_tree(self, widget):
-        """Рекурсивно привязывает скролл ко всем вложенным элементам (таблицам и тексту)"""
         for child in widget.winfo_children():
             child.bind("<MouseWheel>", self._on_mousewheel)
             self.bind_tree(child)
-    # -----------------------------
 
     def check_submit_state(self):
         if self.stage1_completed and self.stage2_completed: self.btn_submit_main.config(state="normal")
@@ -467,15 +481,30 @@ class TechCheckApp:
         # --- RAM ---
         try:
             ram_gb = round(psutil.virtual_memory().total / (1024**3))
-            sticks = self.w.Win32_PhysicalMemory()
-            m_type = {20:"DDR", 21:"DDR2", 24:"DDR3", 26:"DDR4", 30:"DDR5"}.get(int(sticks[0].SMBIOSMemoryType), "RAM") if sticks else "RAM"
-            m_speed = f"{sticks[0].Speed} MHz" if sticks else ""
+            
+            m_type = "RAM"
+            m_speed = ""
+            
+            try:
+                sticks = self.w.Win32_PhysicalMemory()
+                if sticks:
+                    smbios_type = getattr(sticks[0], "SMBIOSMemoryType", None)
+                    if smbios_type is not None:
+                        m_type = {20:"DDR", 21:"DDR2", 24:"DDR3", 26:"DDR4", 30:"DDR5"}.get(int(smbios_type), "RAM")
+                    
+                    speed = getattr(sticks[0], "Speed", None)
+                    if speed is not None:
+                        m_speed = f"{speed} MHz"
+            except Exception:
+                pass 
             
             rec_ram, min_ram = self.cfg_hw.get("ram_rec_gb", 8), self.cfg_hw.get("ram_min_gb", 4)
             ram_col = self.color_err if ram_gb < min_ram else ("#f39c12" if ram_gb < rec_ram else self.color_ok)
             max_ram_val = max(ram_gb, rec_ram, min_ram)
             
-            ram_full_hdr = f"{ram_gb} Гб {m_type} ({m_speed})"
+            speed_str = f" ({m_speed})" if m_speed else ""
+            ram_full_hdr = f"{ram_gb} Гб {m_type}{speed_str}"
+            
             self.report_data.update({'ram_user': f"{ram_gb} Гб", 'ram_color': ram_col, 'ram_raw_full': ram_full_hdr})
             self.result_box.insert(tk.END, f"Оперативная память: {ram_full_hdr}\n", "dark_blue_center")
             
@@ -542,7 +571,7 @@ class TechCheckApp:
             self.result_box.insert(tk.END, "\n\n")
         except: pass
 
-        # --- GPU & Disk (УМНАЯ ПРОВЕРКА SSD) ---
+        # --- GPU & Disk ---
         try:
             gpu_name = "Не найдена"
             try:
@@ -559,7 +588,6 @@ class TechCheckApp:
             try:
                 c_model = "Неизвестный диск"; c_media = "HDD"
                 
-                # 1. Узнаем логическое имя диска
                 for p in self.w.Win32_DiskPartition():
                     for l in p.associators("Win32_LogicalDiskToPartition"):
                         if l.DeviceID == "C:":
@@ -567,7 +595,6 @@ class TechCheckApp:
                                 c_model = d.Model
                                 break
                                 
-                # 2. Продвинутая проверка через родной Storage API Windows
                 try:
                     wmi_storage = wmi.WMI(namespace=r"root\Microsoft\Windows\Storage")
                     for pd in wmi_storage.MSFT_PhysicalDisk():
@@ -579,7 +606,6 @@ class TechCheckApp:
                             break
                 except: pass
                 
-                # 3. Резервная проверка по словарю
                 if c_media == "HDD":
                     ssd_kws = ["ssd", "nvme", "legend", "evo", "pro", "adata", "xpg", "apacer", "kingston", "samsung", "crucial", "wd", "corsair", "m.2", "silicon power", "netac", "gigabyte", "solid state"]
                     if any(k in c_model.lower() for k in ssd_kws):
@@ -614,9 +640,7 @@ class TechCheckApp:
         tk.Frame(t_net, width=740, height=0, bg="#A6A6A6").grid(row=3, column=0, columnspan=2); t_net.columnconfigure(0, weight=1); t_net.columnconfigure(1, weight=1) 
         self.result_box.window_create(tk.END, window=t_net); self.result_box.tag_add("center_table", self.result_box.index("end-1c"), "end"); self.result_box.insert(tk.END, "\n")
         
-        # --- ФИКС ПРОКРУТКИ: ПРИВЯЗЫВАЕМ КОЛЕСИКО МЫШИ КО ВСЕМ ТАБЛИЦАМ ---
         self.bind_tree(self.result_box)
-        # ------------------------------------------------------------------
 
         self.stage1_completed = True
         self.check_submit_state()
@@ -845,9 +869,7 @@ class TechCheckApp:
         except: pass
         return True
 
-    # --- ФУНКЦИЯ-РЕНДЕРЕР: РИСУЕТ ИДЕАЛЬНУЮ ТАБЛИЦУ ДЛЯ ПАЙРУСА ---
     def create_replica_image(self, d, verdict_text, hwid_text):
-        # Делаем холст огромным с запасом (1000px), чтобы в конце обрезать без черных полос
         W, H = 760, 1000 
         img = Image.new('RGB', (W, H), color='#f2f2f2')
         draw = ImageDraw.Draw(img)
@@ -875,7 +897,6 @@ class TechCheckApp:
                 draw.rectangle([curr_x, y, curr_x + w, y + row_h], fill=bg, outline="#A6A6A6")
                 text = str(texts[i])
                 
-                # Векторная отрисовка галочек и крестиков
                 if text == "✔":
                     cx, cy = curr_x + w//2, y + row_h//2
                     draw.line([(cx-4, cy), (cx-1, cy+4), (cx+5, cy-5)], fill=colors[i], width=2)
@@ -883,7 +904,6 @@ class TechCheckApp:
                     cx, cy = curr_x + w//2, y + row_h//2
                     draw.line([(cx-4, cy-4), (cx+4, cy+4)], fill=colors[i], width=2)
                     draw.line([(cx-4, cy+4), (cx+4, cy-4)], fill=colors[i], width=2)
-                # Рисование монолитного бара (без пробелов)
                 elif bar_pct is not None and i == 2:
                     bar_w = int((w - 10) * min(1.0, bar_pct))
                     if bar_w > 0:
@@ -902,7 +922,6 @@ class TechCheckApp:
                 curr_x += w
             return y + row_h
 
-        # --- CPU ---
         y = center_text(f"Ваш процессор (CPU): {d.get('cpu_raw_full', '')}", f_blue, y, "#000080")
         rec_c = self.cfg_hw.get("cpu_rec_score", 4200)
         min_c = self.cfg_hw.get("cpu_min_score", 957)
@@ -917,7 +936,6 @@ class TechCheckApp:
         y = draw_grid_row(margin, y, [c1, c2, c3], [f"Минимально допустимый CPU - {self.cfg_hw.get('cpu_min_name', '')}", str(min_c), ""], [f_bold, f_bold, f_norm], ["black", "#f39c12", "#f39c12"], ["right", "center", "left"], bar_pct=(min_c/max_c))
         y += 10
 
-        # --- RAM ---
         y = center_text(f"Оперативная память: {d.get('ram_raw_full', '')}", f_blue, y, "#000080")
         ram_str = d.get('ram_user', '0 Гб')
         try: usr_r = float(re.search(r'\d+', ram_str).group())
@@ -932,7 +950,6 @@ class TechCheckApp:
         y = draw_grid_row(margin, y, [c1, c2, c3], ["Минимально допустимое кол-во ОЗУ", f"{min_r} Гб", ""], [f_bold, f_bold, f_norm], ["black", "#f39c12", "#f39c12"], ["right", "center", "left"], bar_pct=(min_r/max_r))
         y += 10
 
-        # --- OS ---
         os_ok = d.get('os_color') == self.color_ok
         y = center_text(f"ОС: {d.get('os_raw_full', '')}", f_blue, y, "#000080")
         c1_os, c2_os, c3_os = 450, 230, 60
@@ -940,31 +957,26 @@ class TechCheckApp:
         y = draw_grid_row(margin, y, [c1_os, c2_os, c3_os], ["Обязательная ОС:", self.cfg_hw.get("os_required", "Windows 10 или 11"), "✔"], [f_bold, f_norm, f_norm], ["black", self.color_ok, self.color_ok], ["right", "center", "center"])
         y += 10
 
-        # --- Peripherals ---
         c1_p, c2_p = 600, 140
         y = draw_grid_row(margin, y, [c1_p, c2_p], ["Клавиатура:", d.get('kb_ic', '✔')], [f_bold, f_norm], ["black", d.get('kb_col', 'green')], ["right", "center"])
         y = draw_grid_row(margin, y, [c1_p, c2_p], ["Мышь:", d.get('ms_ic', '✔')], [f_bold, f_norm], ["black", d.get('ms_col', 'green')], ["right", "center"])
         y = draw_grid_row(margin, y, [c1_p, c2_p], ["Аудиоустройство:", d.get('au_ic', '✔')], [f_bold, f_norm], ["black", d.get('au_col', 'green')], ["right", "center"])
         y += 10
 
-        # --- GPU & Disk ---
         c1_m, c2_m = 200, 540
         y = draw_grid_row(margin, y, [c1_m, c2_m], ["Видеокарта:", d.get('gpu_name', '')], [f_bold, f_norm], ["black", "black"], ["right", "left"])
         y = draw_grid_row(margin, y, [c1_m, c2_m], ["Разрешение экрана:", d.get('resolution', '')], [f_bold, f_norm], ["black", "black"], ["right", "left"])
         y = draw_grid_row(margin, y, [c1_m, c2_m], ["Диск C:", d.get('c_drive', '')], [f_bold, f_norm], ["black", d.get('c_color', 'black')], ["right", "left"])
         y += 10
 
-        # --- Network ---
         y = draw_grid_row(margin, y, [c1_m, c2_m], ["Пинг:", d.get('ping', '')], [f_bold, f_norm], ["black", d.get('ping_color', 'black')], ["right", "left"])
         y = draw_grid_row(margin, y, [c1_m, c2_m], ["Входящая скорость:", d.get('dl', '')], [f_bold, f_norm], ["black", d.get('dl_color', 'black')], ["right", "left"])
         y = draw_grid_row(margin, y, [c1_m, c2_m], ["Исходящая скорость:", d.get('ul', '')], [f_bold, f_norm], ["black", d.get('ul_color', 'black')], ["right", "left"])
         y += 10
         
-        # --- System Footer ---
         y = draw_grid_row(margin, y, [c1_m, c2_m], ["ВЕРДИКТ АНАЛИЗА:", verdict_text], [f_bold, f_bold], ["black", self.color_ok if verdict_text == "ОБОРУДОВАНИЕ ПОДХОДИТ" else self.color_err], ["right", "left"])
         y = draw_grid_row(margin, y, [c1_m, c2_m], ["HWID (Уник. код):", hwid_text], [f_bold, f_bold], ["black", "black"], ["right", "left"])
 
-        # Обрезаем лишнее по факту (никаких черных полос!)
         img = img.crop((0, 0, W, y + 10))
 
         buffered = io.BytesIO()
@@ -972,6 +984,30 @@ class TechCheckApp:
         return base64.b64encode(buffered.getvalue()).decode("utf-8")
 
     def launch_browser(self, improvements):
+        # 1. СНАЧАЛА проверяем наличие современного движка (WebView2)
+        if not is_webview2_installed():
+            ans = messagebox.askyesno(
+                "Требуется системный компонент",
+                "На вашем ПК не установлен современный веб-движок (WebView2), необходимый для открытия формы отправки.\n\n"
+                "Установить его сейчас автоматически? (Потребуется подключение к интернету)"
+            )
+            if ans:
+                setup_path = resource_path("MicrosoftEdgeWebview2Setup.exe")
+                if os.path.exists(setup_path):
+                    try:
+                        # Запускаем установщик
+                        subprocess.Popen([setup_path])
+                        messagebox.showinfo("Установка", "Запущена установка Microsoft Edge WebView2.\nПожалуйста, дождитесь её окончания, а затем снова нажмите 'ОТПРАВИТЬ ОТЧЁТ'.")
+                    except Exception as e:
+                        messagebox.showerror("Ошибка", f"Не удалось запустить установщик: {e}")
+                else:
+                    messagebox.showerror("Ошибка", "Файл установщика MicrosoftEdgeWebview2Setup.exe не найден в сборке!")
+            
+            self.root.attributes('-disabled', False)
+            self.verdict_win.destroy()
+            return
+
+        # 2. ТОЛЬКО ПОТОМ проверяем антиспам (когда уверены, что форма откроется)
         if not self.check_and_set_spam_lock():
             timeout_hours = self.cfg_spam.get("lock_timeout_hours", 24.0)
             messagebox.showerror("Отправка заблокирована", f"Отчёт с этого компьютера уже был отправлен.\nПовторная отправка возможна через {timeout_hours} ч.")
